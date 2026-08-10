@@ -866,7 +866,7 @@
                 </div>
 
                 <!-- Service 2: News -->
-                <div class="menu-card" onclick="navigateTo('news-view')">
+                <div class="menu-card" onclick="openNews()">
                     <div class="menu-card-left">
                         <div class="menu-card-icon" style="background: rgba(245, 124, 0, 0.15); color: #F57C00;">
                             <span class="material-symbols-outlined">newspaper</span>
@@ -925,7 +925,7 @@
                     Credencial
                 </button>
                 <!-- Botón 2: Novedades (derecha) -->
-                <button class="nav-btn" id="nav-news" onclick="navigateTo('news-view')">
+                <button class="nav-btn" id="nav-news" onclick="openNews()">
                     <span class="material-symbols-outlined">newspaper</span>
                     Novedades
                 </button>
@@ -1165,7 +1165,7 @@
                 // Reemplazar entrada de historial para que "Atrás" no restaure vista previa
                 history.replaceState({ view: 'credential' }, '', window.location.href);
             } else if (viewId === 'news-view') {
-                loadNewsIFrame();
+                openNews();
             } else if (viewId === 'login-view') {
                 // Al ir a login, reemplazar historial para bloquear retroceso a credencial
                 history.replaceState({ view: 'login' }, '', window.location.href);
@@ -1297,14 +1297,19 @@
             iframe.src = targetUrl + '&_t=' + Date.now();
         }
 
+        /**
+         * Abre Novedades en el navegador del sistema.
+         * Google Sites bloquea ser embebido en iframes (X-Frame-Options),
+         * por lo que window.open() es la única opción viable.
+         * En iOS standalone, esto abre Safari externalmente; el usuario
+         * puede volver a la app desde el gestor de apps.
+         */
+        function openNews() {
+            window.open(NEWS_URL, '_blank', 'noopener,noreferrer');
+        }
+
         function loadNewsIFrame() {
-            document.getElementById('news-loader').style.display = 'flex';
-            const iframe = document.getElementById('news-iframe');
-            if (iframe.src === 'about:blank' || iframe.src === '') {
-                iframe.src = NEWS_URL;
-            } else {
-                document.getElementById('news-loader').style.display = 'none';
-            }
+            // Mantenida por compatibilidad, no se usa actualmente.
         }
 
         function setupIFrameHandlers() {
@@ -1335,7 +1340,7 @@
             if (action === 'logout') {
                 showLogoutDialog();
             } else if (action === 'news') {
-                navigateTo('news-view');
+                navigateTo('credential-view');
             } else if (action === 'credential') {
                 reloadCredential();
             }
