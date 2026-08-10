@@ -657,6 +657,62 @@
             color: white;
         }
 
+        /* ── Bottom Navigation Bar (credential-view) ── */
+        .bottom-nav {
+            height: 68px;
+            background-color: rgba(13, 27, 42, 0.97);
+            border-top: 1px solid rgba(255, 255, 255, 0.1);
+            display: flex;
+            align-items: center;
+            justify-content: space-around;
+            position: sticky;
+            bottom: 0;
+            z-index: 100;
+            padding-bottom: env(safe-area-inset-bottom, 0px);
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+        }
+
+        .nav-btn {
+            flex: 1;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 4px;
+            background: transparent;
+            border: none;
+            color: rgba(255, 255, 255, 0.5);
+            cursor: pointer;
+            font-family: var(--font-main);
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+            transition: color 0.2s ease;
+        }
+
+        .nav-btn.active {
+            color: var(--golden-btn);
+        }
+
+        .nav-btn span.material-symbols-outlined {
+            font-size: 26px;
+        }
+
+        /* credential-view layout: fills screen, iframe grows, nav sticks at bottom */
+        #credential-view {
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        #credential-view .webview-container {
+            flex: 1;
+            min-height: 0;
+        }
+
         /* Animations */
         @keyframes spin {
             to { transform: rotate(360deg); }
@@ -744,13 +800,13 @@
                     <!-- DNI input -->
                     <div class="input-group">
                         <span class="material-symbols-outlined">login</span>
-                        <input id="login-dni" type="tel" pattern="[0-9]*" class="input-field" placeholder="Ingrese su DNI" required/>
+                        <input id="login-dni" type="tel" pattern="[0-9]*" inputmode="numeric" class="input-field" placeholder="Ingrese su DNI" required/>
                     </div>
 
                     <!-- Name input -->
                     <div class="input-group">
                         <span class="material-symbols-outlined">person_outline</span>
-                        <input id="login-name" type="text" class="input-field" placeholder="Nombre y Apellido" required/>
+                        <input id="login-name" type="text" autocomplete="name" class="input-field" placeholder="Nombre y Apellido" required/>
                     </div>
 
                     <!-- Submit Button -->
@@ -839,20 +895,41 @@
             </div>
         </div>
 
-        <!-- 3. CREDENTIAL VIEW (IFRAME) -->
+        <!-- 3. CREDENTIAL VIEW (con barra de navegación inferior) -->
         <div id="credential-view" class="view">
-            <header class="webview-header">
-                <button onclick="navigateTo('dashboard-view')" class="back-btn">
-                    <span class="material-symbols-outlined">arrow_back_ios</span>
-                    Atrás
+            <!-- App bar superior con título y botón cuenta -->
+            <header class="app-bar">
+                <div style="display:flex; align-items:center; gap:10px;">
+                    <span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1;">badge</span>
+                    <span class="app-bar-title">Mi Credencial</span>
+                </div>
+                <!-- Botón 3: cuenta / logout (circular, superior derecho) -->
+                <button onclick="showLogoutDialog()" class="app-bar-action" id="btn-account">
+                    <span class="material-symbols-outlined">account_circle</span>
                 </button>
             </header>
+
+            <!-- Iframe de la credencial -->
             <div class="webview-container">
                 <div id="credential-loader" class="loading-screen">
                     <div class="spinner"></div>
                 </div>
                 <iframe id="credential-iframe" class="webview-iframe" src="about:blank"></iframe>
             </div>
+
+            <!-- Barra de navegación inferior (Botones 1 y 2) -->
+            <nav class="bottom-nav">
+                <!-- Botón 1: Credencial (izquierda) -->
+                <button class="nav-btn active" id="nav-credential" onclick="reloadCredential()">
+                    <span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1;">badge</span>
+                    Credencial
+                </button>
+                <!-- Botón 2: Novedades (derecha) -->
+                <button class="nav-btn" id="nav-news" onclick="navigateTo('news-view')">
+                    <span class="material-symbols-outlined">newspaper</span>
+                    Novedades
+                </button>
+            </nav>
         </div>
 
         <!-- 4. NEWS VIEW (IFRAME) -->
@@ -911,7 +988,7 @@
                     <span class="icon material-symbols-outlined">info</span>
                     <div class="contact-details">
                         <h5>Versión Web App</h5>
-                        <p>1.0.0 (iOS Standalone)</p>
+                        <p>1.1.0 (iOS Standalone)</p>
                     </div>
                 </div>
             </div>
@@ -935,76 +1012,113 @@
     </div>
 
     <script>
-        // Project Constants
+        // ── Constantes del proyecto ─────────────────────────────────────────
         const LOGIN_API_URL = 'https://script.google.com/macros/s/AKfycbzwlmFPZRNYVtnGzGegkwC6ozoyDu9OEc0kauSa-kCGUMuZieU9vN8k86l9NemhJsCZ/exec';
         const CREDENTIAL_BASE_URL = 'https://sindicarnecolon.github.io/gestion-credenciales/';
         const NEWS_URL = 'https://sites.google.com/view/sindicatodelacarnecolon/p%C3%A1gina-principal';
 
+        // Estado global
         let currentUser = null;
 
-        // 1. Device Detections
+        // ── Detección de entorno ────────────────────────────────────────────
+
+        /**
+         * Modo desarrollo local: activo cuando se ejecuta en localhost/127.0.0.1
+         * o mediante el protocolo file://. NO funciona en GitHub Pages.
+         */
+        function isLocalDev() {
+            const h = window.location.hostname;
+            return h === 'localhost' || h === '127.0.0.1' || h === '' ||
+                   window.location.protocol === 'file:';
+        }
+
+        /**
+         * Detección de iOS con múltiples capas:
+         * - User Agent (iPhone/iPad/iPod)
+         * - iPad iOS 13+ que reporta MacIntel pero tiene maxTouchPoints > 1
+         * - Exclusión explícita de Android
+         * - Presencia de window.navigator.standalone (exclusivo de Safari/iOS)
+         *
+         * LIMITACIÓN CONOCIDA: Una Web App estática no puede ofrecer seguridad
+         * absoluta en la detección del dispositivo. Un usuario con conocimientos
+         * técnicos puede modificar el User Agent desde DevTools.
+         * Esta detección es una barrera disuasoria robusta, no una garantía.
+         */
         function isIOS() {
-            return /iPad|iPhone|iPod/.test(navigator.userAgent) || 
-                   (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+            const ua = navigator.userAgent;
+            // Exclusión explícita: Android nunca es iOS
+            if (/Android/i.test(ua)) return false;
+            // Señal 1: UA clásico de iOS
+            const uaMatch = /iPad|iPhone|iPod/.test(ua);
+            // Señal 2: iPad con iOS 13+ que reporta MacIntel
+            const ipadModern = navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1;
+            // Señal 3: presencia de la propiedad standalone (exclusiva de Safari/iOS)
+            const hasStandalone = typeof window.navigator.standalone !== 'undefined';
+            // Señal 4: ausencia de ontouchstart en escritorio con UA manipulado (heurística)
+            const hasTouch = navigator.maxTouchPoints > 0;
+            return (uaMatch || ipadModern) && hasStandalone && hasTouch;
         }
 
         function isStandalone() {
             return ('standalone' in window.navigator) && window.navigator.standalone;
         }
 
-        // Initialize App flow
+        // ── Inicialización ──────────────────────────────────────────────────
         window.addEventListener('DOMContentLoaded', () => {
-            // First: OS validation
+            // Modo desarrollo local: saltar todas las validaciones de dispositivo
+            if (isLocalDev()) {
+                document.getElementById('app-container').style.display = 'flex';
+                checkSession();
+                setupIFrameHandlers();
+                return;
+            }
+
+            // Producción: validación de iOS
             if (!isIOS()) {
                 document.getElementById('os-restrict-screen').style.display = 'flex';
                 return;
             }
 
-            // Second: PWA Standalone Mode validation
+            // iOS confirmado: validación de modo standalone (instalada como PWA)
             if (!isStandalone()) {
                 document.getElementById('pwa-guide-screen').style.display = 'flex';
                 return;
             }
 
-            // iOS & Standalone confirmed -> Start app
+            // iOS + Standalone: iniciar app
             document.getElementById('app-container').style.display = 'flex';
             checkSession();
             setupIFrameHandlers();
         });
 
-        // 2. Navigation
-        function navigateTo(viewId) {
-            // Hide all views
-            document.querySelectorAll('.view').forEach(view => {
-                view.classList.remove('active');
-            });
-            // Show target view
-            const targetView = document.getElementById(viewId);
-            targetView.classList.add('active');
-
-            // View-specific initializations
-            if (viewId === 'credential-view') {
-                loadCredentialIFrame();
-            } else if (viewId === 'news-view') {
-                loadNewsIFrame();
-            }
-        }
-
-        // Setup session checks
+        // ── Sesión ──────────────────────────────────────────────────────────
         function checkSession() {
-            const stored = localStorage.getItem('user_session');
-            if (stored) {
+            const stored = sessionStorage.getItem('user_session');
+            // También aceptar localStorage por compatibilidad con sesiones anteriores
+            const storedLocal = localStorage.getItem('user_session');
+            const raw = stored || storedLocal;
+            if (raw) {
                 try {
-                    currentUser = JSON.parse(stored);
-                    populateDashboard();
-                    navigateTo('dashboard-view');
+                    currentUser = JSON.parse(raw);
+                    // Migrar a sessionStorage si venía de localStorage
+                    if (storedLocal && !stored) {
+                        sessionStorage.setItem('user_session', storedLocal);
+                        localStorage.removeItem('user_session');
+                    }
+                    navigateTo('credential-view');
                 } catch(e) {
-                    localStorage.removeItem('user_session');
+                    clearSession();
                     navigateTo('login-view');
                 }
             } else {
                 navigateTo('login-view');
             }
+        }
+
+        function clearSession() {
+            sessionStorage.removeItem('user_session');
+            localStorage.removeItem('user_session');
+            currentUser = null;
         }
 
         function populateDashboard() {
@@ -1013,20 +1127,91 @@
             document.getElementById('dash-useraffiliate').textContent = `N° Afiliado: ${currentUser.affiliateNumber}`;
         }
 
-        // 3. Login Action
+        // ── Formato de fecha de vencimiento ────────────────────────────────
+        function formatVto(vtoRaw) {
+            if (!vtoRaw) return '';
+            let raw = vtoRaw.replace(/^Vto:\s*/i, '').replace(/\s*\(.*?\)/g, '').trim();
+
+            if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(raw)) {
+                const parts = raw.split('/');
+                return `${parts[0].padStart(2, '0')}/${parts[1].padStart(2, '0')}/${parts[2]}`;
+            }
+            if (/^\d{1,2}\/\d{4}$/.test(raw)) {
+                const parts = raw.split('/');
+                return `${parts[0].padStart(2, '0')}/${parts[1]}`;
+            }
+            if (/^\d{4}-\d{2}-\d{2}/.test(raw)) {
+                const datePart = raw.split('T')[0];
+                const parts = datePart.split('-');
+                return `${parts[2]}/${parts[1]}/${parts[0]}`;
+            }
+            const d = new Date(raw);
+            if (!isNaN(d.getTime())) {
+                return `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`;
+            }
+            return raw;
+        }
+
+        // ── Navegación ──────────────────────────────────────────────────────
+        function navigateTo(viewId) {
+            document.querySelectorAll('.view').forEach(view => {
+                view.classList.remove('active');
+            });
+            const targetView = document.getElementById(viewId);
+            if (targetView) targetView.classList.add('active');
+
+            if (viewId === 'credential-view') {
+                loadCredentialIFrame();
+                // Reemplazar entrada de historial para que "Atrás" no restaure vista previa
+                history.replaceState({ view: 'credential' }, '', window.location.href);
+            } else if (viewId === 'news-view') {
+                loadNewsIFrame();
+            } else if (viewId === 'login-view') {
+                // Al ir a login, reemplazar historial para bloquear retroceso a credencial
+                history.replaceState({ view: 'login' }, '', window.location.href);
+            }
+        }
+
+        // Interceptar botón "Atrás" del navegador
+        window.addEventListener('popstate', () => {
+            const stored = sessionStorage.getItem('user_session') || localStorage.getItem('user_session');
+            if (!stored) {
+                // Sin sesión: forzar login
+                document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+                document.getElementById('login-view').classList.add('active');
+                history.replaceState({ view: 'login' }, '', window.location.href);
+            } else {
+                // Con sesión: volver a credencial
+                document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+                document.getElementById('credential-view').classList.add('active');
+                history.replaceState({ view: 'credential' }, '', window.location.href);
+            }
+        });
+
+        // ── Login ───────────────────────────────────────────────────────────
         async function handleLoginSubmit(event) {
             event.preventDefault();
-            const dni = document.getElementById('login-dni').value.trim();
-            const name = document.getElementById('login-name').value.trim();
+            const dniRaw = document.getElementById('login-dni').value.trim();
+            const nameRaw = document.getElementById('login-name').value.trim();
 
-            if (!dni || !name) {
+            if (!dniRaw || !nameRaw) {
                 showSnackbar('Por favor ingrese el DNI y el Nombre completo.');
                 return;
             }
 
-            // Show loader
+            // Normalización: solo dígitos para DNI, espacios colapsados y trim para nombre
+            const dni = dniRaw.replace(/\D/g, '');
+            const name = nameRaw.replace(/\s+/g, ' ').trim();
+
+            if (!dni) {
+                showSnackbar('El DNI debe contener solo números.');
+                return;
+            }
+
+            // Mostrar spinner
             document.getElementById('btn-text').style.display = 'none';
             document.getElementById('btn-spinner').style.display = 'block';
+            document.getElementById('login-form').querySelector('button[type="submit"]').disabled = true;
 
             try {
                 const url = `${LOGIN_API_URL}?dni=${encodeURIComponent(dni)}&nombre=${encodeURIComponent(name)}`;
@@ -1042,45 +1227,74 @@
                         fullName: data.nombre || name,
                         affiliateNumber: data.nroAfiliado || '',
                         establishment: data.establecimiento || '',
-                        vtoRaw: data.vto || '',
-                        isExpired: data.success ? false : true // managed by client verification
+                        vtoRaw: formatVto(data.vto || ''),
+                        status: 'activo'
                     };
-                    
-                    localStorage.setItem('user_session', JSON.stringify(currentUser));
-                    populateDashboard();
-                    navigateTo('dashboard-view');
+
+                    // Guardar sesión en sessionStorage (se limpia al cerrar el navegador)
+                    sessionStorage.setItem('user_session', JSON.stringify(currentUser));
+                    // Limpiar campos del formulario
+                    document.getElementById('login-dni').value = '';
+                    document.getElementById('login-name').value = '';
+                    // Ir directamente a la credencial
+                    navigateTo('credential-view');
                 } else {
-                    showSnackbar(data.message || 'DNI o Nombre y Apellido incorrectos.');
+                    showSnackbar(data.message || 'DNI o Nombre y Apellido incorrectos. Por favor verifique los datos.');
                 }
             } catch(error) {
-                showSnackbar('Error de conexión. Intente nuevamente.');
-                console.error(error);
+                if (error.message && error.message.includes('Error de servidor')) {
+                    showSnackbar(error.message);
+                } else {
+                    showSnackbar('Error de conexión. Verifique su red e intente nuevamente.');
+                }
+                console.error('[Login]', error);
             } finally {
-                // Hide loader
                 document.getElementById('btn-text').style.display = 'block';
                 document.getElementById('btn-spinner').style.display = 'none';
+                document.getElementById('login-form').querySelector('button[type="submit"]').disabled = false;
             }
         }
 
-        // 4. Load WebViews inside IFrames
+        // ── Carga de iframes ────────────────────────────────────────────────
         function loadCredentialIFrame() {
             if (!currentUser) return;
-            
+
             document.getElementById('credential-loader').style.display = 'flex';
             const iframe = document.getElementById('credential-iframe');
 
-            // Build query params
             const params = new URLSearchParams({
                 dni: currentUser.dni,
                 nombre: currentUser.fullName,
                 nro: currentUser.affiliateNumber,
                 estab: currentUser.establishment,
                 vto: currentUser.vtoRaw,
-                status: 'activo'
+                status: currentUser.status || 'activo'
             });
 
             const targetUrl = `${CREDENTIAL_BASE_URL}?${params.toString()}`;
-            iframe.src = targetUrl;
+            // Solo recargar si la URL cambió (evita parpadeo innecesario)
+            if (iframe.src !== targetUrl) {
+                iframe.src = targetUrl;
+            } else {
+                document.getElementById('credential-loader').style.display = 'none';
+            }
+        }
+
+        function reloadCredential() {
+            if (!currentUser) return;
+            const iframe = document.getElementById('credential-iframe');
+            const params = new URLSearchParams({
+                dni: currentUser.dni,
+                nombre: currentUser.fullName,
+                nro: currentUser.affiliateNumber,
+                estab: currentUser.establishment,
+                vto: currentUser.vtoRaw,
+                status: currentUser.status || 'activo'
+            });
+            const targetUrl = `${CREDENTIAL_BASE_URL}?${params.toString()}`;
+            document.getElementById('credential-loader').style.display = 'flex';
+            // Forzar recarga añadiendo timestamp
+            iframe.src = targetUrl + '&_t=' + Date.now();
         }
 
         function loadNewsIFrame() {
@@ -1094,29 +1308,26 @@
         }
 
         function setupIFrameHandlers() {
-            // Loader hides
             document.getElementById('credential-iframe').addEventListener('load', () => {
                 document.getElementById('credential-loader').style.display = 'none';
                 injectIframeJSBridge();
             });
-
             document.getElementById('news-iframe').addEventListener('load', () => {
                 document.getElementById('news-loader').style.display = 'none';
             });
         }
 
-        // Javascript Bridge for the Credential Iframe (Same-Origin makes this possible)
+        // Bridge JS para el iframe de credencial (mismo origen)
         function injectIframeJSBridge() {
             const iframe = document.getElementById('credential-iframe');
             try {
-                // Inject the FlutterChannel into the same-origin iframe's window
                 iframe.contentWindow.FlutterChannel = {
                     postMessage: function(action) {
                         handleIframeMessage(action);
                     }
                 };
             } catch (err) {
-                console.warn("Could not inject bridge, likely cross-origin loading:", err);
+                console.warn('[Bridge] Cross-origin, no se pudo inyectar:', err);
             }
         }
 
@@ -1126,27 +1337,26 @@
             } else if (action === 'news') {
                 navigateTo('news-view');
             } else if (action === 'credential') {
-                // reload current credential frame
-                loadCredentialIFrame();
+                reloadCredential();
             }
         }
 
-        // Support for Back navigation inside News Site (Google Sites)
+        // Botón "Atrás" en la vista de Novedades
         function handleNewsBack() {
             const iframe = document.getElementById('news-iframe');
             try {
                 if (iframe.contentWindow.history.length > 1) {
                     iframe.contentWindow.history.back();
                 } else {
-                    navigateTo('dashboard-view');
+                    navigateTo('credential-view');
                 }
             } catch(e) {
-                // cross-origin security fallback
-                navigateTo('dashboard-view');
+                // cross-origin fallback
+                navigateTo('credential-view');
             }
         }
 
-        // 5. Modals and Dialogs
+        // ── Modales y diálogos ──────────────────────────────────────────────
         function openSupportModal() {
             document.getElementById('support-modal').classList.add('open');
         }
@@ -1164,27 +1374,24 @@
         }
 
         function confirmLogout() {
-            localStorage.removeItem('user_session');
-            currentUser = null;
+            clearSession();
             closeLogoutDialog();
-            
-            // Clean iframe views
+            // Limpiar iframe para eliminar datos del afiliado del DOM
             document.getElementById('credential-iframe').src = 'about:blank';
-            
+            // Ir a login, reemplazando el historial
             navigateTo('login-view');
         }
 
-        // 6. Alert Snackbar
+        // ── Snackbar de errores ─────────────────────────────────────────────
         let snackbarTimeout;
         function showSnackbar(msg) {
             const sb = document.getElementById('error-snackbar');
             document.getElementById('snackbar-message').textContent = msg;
             sb.classList.add('show');
-            
             clearTimeout(snackbarTimeout);
             snackbarTimeout = setTimeout(() => {
                 sb.classList.remove('show');
-            }, 3500);
+            }, 4000);
         }
     </script>
 </body>
