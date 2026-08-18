@@ -405,6 +405,32 @@
             font-weight: 500;
         }
 
+        /* ── Notification Badges ── */
+        .notification-badge {
+            position: absolute;
+            top: -2px;
+            right: -2px;
+            width: 12px;
+            height: 12px;
+            background-color: var(--error-color);
+            border: 2px solid #FFFFFF;
+            border-radius: 50%;
+            pointer-events: none;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+        }
+
+        .notification-badge-nav {
+            position: absolute;
+            top: -2px;
+            right: -4px;
+            width: 9px;
+            height: 9px;
+            background-color: var(--error-color);
+            border: 1.5px solid var(--surface);
+            border-radius: 50%;
+            pointer-events: none;
+        }
+
         /* Subviews for WebView */
         .webview-header {
             height: 60px;
@@ -926,8 +952,9 @@
                 <!-- Service 2: News -->
                 <div class="menu-card" onclick="openNews()">
                     <div class="menu-card-left">
-                        <div class="menu-card-icon" style="background: rgba(37, 169, 214, 0.15); color: var(--secondary);">
+                        <div class="menu-card-icon" style="background: rgba(37, 169, 214, 0.15); color: var(--secondary); position: relative;">
                             <span class="material-symbols-outlined">newspaper</span>
+                            <span id="news-badge-dash" class="notification-badge" style="display: none;"></span>
                         </div>
                         <div class="menu-card-info">
                             <h4>Novedades y Anuncios</h4>
@@ -984,7 +1011,10 @@
                 </button>
                 <!-- Botón 2: Novedades (derecha) -->
                 <button class="nav-btn" id="nav-news" onclick="openNews()">
-                    <span class="material-symbols-outlined">newspaper</span>
+                    <div style="position: relative; display: inline-flex; align-items: center; justify-content: center;">
+                        <span class="material-symbols-outlined">newspaper</span>
+                        <span id="news-badge-nav" class="notification-badge-nav" style="display: none;"></span>
+                    </div>
                     Novedades
                 </button>
             </nav>
@@ -1072,11 +1102,13 @@
     <script>
         // ── Constantes del proyecto ─────────────────────────────────────────
         const LOGIN_API_URL = 'https://script.google.com/macros/s/AKfycbzwlmFPZRNYVtnGzGegkwC6ozoyDu9OEc0kauSa-kCGUMuZieU9vN8k86l9NemhJsCZ/exec';
+        const NOTIFICATION_API_URL = 'https://script.google.com/macros/s/AKfycbwGF4TrGZlVA1F3SaYkG91AqpW2XcTZqWGXSbRzUqoY742uqWpq2foyEMLNmY9IKgvI/exec';
         const CREDENTIAL_BASE_URL = 'https://sindicarnecolon.github.io/gestion-credenciales/';
         const NEWS_URL = 'https://sites.google.com/view/sindicatodelacarnecolon/p%C3%A1gina-principal';
 
         // Estado global
         let currentUser = null;
+        let activeNotificationId = null;
 
         // ── Detección de entorno ────────────────────────────────────────────
 
@@ -1163,7 +1195,9 @@
                         sessionStorage.setItem('user_session', storedLocal);
                         localStorage.removeItem('user_session');
                     }
+                    populateDashboard();
                     navigateTo('credential-view');
+                    checkNotifications();
                 } catch(e) {
                     clearSession();
                     navigateTo('login-view');
@@ -1180,6 +1214,7 @@
         }
 
         function populateDashboard() {
+            if (!currentUser) return;
             document.getElementById('dash-username').textContent = currentUser.fullName;
             document.getElementById('dash-userdni').textContent = `DNI: ${currentUser.dni}`;
             document.getElementById('dash-useraffiliate').textContent = `N° Afiliado: ${currentUser.affiliateNumber}`;
@@ -1246,6 +1281,67 @@
             }
         });
 
+        // ── Notificaciones ──────────────────────────────────────────────────
+
+        /**
+         * Consulta el estado del backend de notificaciones.
+         * Es tolerante a fallos: ante cualquier error o timeout oculta el indicador.
+         */
+        async function checkNotifications() {
+            if (!NOTIFICATION_API_URL) return;
+            try {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 10000);
+                const response = await fetch(`${NOTIFICATION_API_URL}?action=status`, {
+                    signal: controller.signal
+                });
+                clearTimeout(timeoutId);
+
+                if (!response.ok) {
+                    updateNotificationBadge(false);
+                    return;
+                }
+
+                const data = await response.json();
+                if (data && data.success === true && data.enabled === true && data.notificationId != null) {
+                    activeNotificationId = String(data.notificationId);
+                    const lastReadId = localStorage.getItem('last_read_notification_id');
+                    const hasNew = (activeNotificationId !== lastReadId);
+                    updateNotificationBadge(hasNew);
+                } else {
+                    activeNotificationId = null;
+                    updateNotificationBadge(false);
+                }
+            } catch (_) {
+                // Ante fallo de red o timeout, silenciosamente ocultar badge
+                updateNotificationBadge(false);
+            }
+        }
+
+        function updateNotificationBadge(show) {
+            const badgeDash = document.getElementById('news-badge-dash');
+            const badgeNav = document.getElementById('news-badge-nav');
+            if (badgeDash) badgeDash.style.display = show ? 'block' : 'none';
+            if (badgeNav) badgeNav.style.display = show ? 'block' : 'none';
+        }
+
+        function markNotificationAsRead() {
+            if (activeNotificationId) {
+                try {
+                    localStorage.setItem('last_read_notification_id', activeNotificationId);
+                } catch (_) {}
+            }
+            updateNotificationBadge(false);
+        }
+
+        /**
+         * Abre Novedades en el navegador del sistema y marca la notificación como leída.
+         */
+        function openNews() {
+            markNotificationAsRead();
+            window.open(NEWS_URL, '_blank', 'noopener,noreferrer');
+        }
+
         // ── Login ───────────────────────────────────────────────────────────
         async function handleLoginSubmit(event) {
             event.preventDefault();
@@ -1294,8 +1390,10 @@
                     // Limpiar campos del formulario
                     document.getElementById('login-dni').value = '';
                     document.getElementById('login-name').value = '';
+                    populateDashboard();
                     // Ir directamente a la credencial
                     navigateTo('credential-view');
+                    checkNotifications();
                 } else {
                     showSnackbar(data.message || 'DNI o Nombre y Apellido incorrectos. Por favor verifique los datos.');
                 }
@@ -1355,19 +1453,8 @@
             iframe.src = targetUrl + '&_t=' + Date.now();
         }
 
-        /**
-         * Abre Novedades en el navegador del sistema.
-         * Google Sites bloquea ser embebido en iframes (X-Frame-Options),
-         * por lo que window.open() es la única opción viable.
-         * En iOS standalone, esto abre Safari externalmente; el usuario
-         * puede volver a la app desde el gestor de apps.
-         */
-        function openNews() {
-            window.open(NEWS_URL, '_blank', 'noopener,noreferrer');
-        }
-
         function loadNewsIFrame() {
-            // Mantenida por compatibilidad, no se usa actualmente.
+            // Mantenida por compatibilidad
         }
 
         function setupIFrameHandlers() {
