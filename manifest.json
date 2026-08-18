@@ -1,11 +1,11 @@
 {
-  "name": "Sindicato de la Carne - Credencial Digital",
-  "short_name": "Sindicato Carne",
-  "description": "Credencial Digital de Afiliados y Novedades del Sindicato de la Carne",
+  "name": "Mi Credencial Online",
+  "short_name": "Mi Credencial",
+  "description": "Credencial Digital de Afiliados y Servicios de Mi Credencial Online",
   "start_url": "index.html",
   "display": "standalone",
-  "background_color": "#0D1B2A",
-  "theme_color": "#0D1B2A",
+  "background_color": "#E6EEF4",
+  "theme_color": "#1E5FAF",
   "orientation": "portrait-primary",
   "icons": [
     {
