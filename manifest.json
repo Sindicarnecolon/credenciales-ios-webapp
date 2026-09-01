@@ -4,8 +4,8 @@
   "description": "Credencial Digital de Afiliados y Servicios de Mi Credencial Online",
   "start_url": "index.html",
   "display": "standalone",
-  "background_color": "#E6EEF4",
-  "theme_color": "#1E5FAF",
+  "background_color": "#F8FAFC",
+  "theme_color": "#012081",
   "orientation": "portrait-primary",
   "icons": [
     {

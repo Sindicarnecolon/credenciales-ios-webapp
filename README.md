@@ -65,7 +65,7 @@ Una vez que se complete la compilación en GitHub (aproximadamente 1 minuto), el
 ---
 
 ## 📱 Cómo lo utiliza el usuario final en su iPhone/iPad:
-1. Abre **Safari** en el dispositivo iOS.
-2. Accede a `https://sindicarnecolon.github.io/credenciales-ios-webapp/`.
-3. Verá una guía visual que le indica pulsar el botón de **Compartir** y luego **"Añadir a pantalla de inicio"**.
-4. Una vez agregado, se abre desde la pantalla de inicio como una aplicación nativa.
+1. Abre **Safari** (o cualquier navegador moderno) y accede a `https://sindicarnecolon.github.io/credenciales-ios-webapp/`.
+2. Inicia sesión con su **DNI** y **Nombre y Apellido**.
+3. Accede directamente a su **Credencial Digital**, generación de **Código QR**, **Novedades** y **Configuración**.
+4. Para tener acceso rápido como app nativa, puede pulsar **Compartir** en Safari y seleccionar **"Añadir a pantalla de inicio"**.
