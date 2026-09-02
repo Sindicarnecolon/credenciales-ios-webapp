@@ -1211,10 +1211,8 @@
         const CREDENTIAL_BASE_URL = 'https://sindicarnecolon.github.io/gestion-credenciales/';
         const NEWS_URL = 'https://sites.google.com/view/sindicatodelacarnecolon/p%C3%A1gina-principal';
 
-        // ── Control de Restricción de Dispositivos ──────────────────────────
-        // TEMPORAL: Deshabilitado para permitir desarrollo y pruebas en PC / Android / iOS.
-        // Para reactivar la exclusividad de iOS en producción, cambiar a: false
-        const DISABLE_IOS_RESTRICTION = true;
+        // Control de Restricción de Dispositivos (REACTIVADA PARA PRODUCCIÓN)
+        const DISABLE_IOS_RESTRICTION = false;
 
         // Estado global
         let currentUser = null;
