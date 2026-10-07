@@ -1211,8 +1211,17 @@
         const CREDENTIAL_BASE_URL = 'https://sindicarnecolon.github.io/gestion-credenciales/';
         const NEWS_URL = 'https://sites.google.com/view/sindicatodelacarnecolon/p%C3%A1gina-principal';
 
-        // Control de Restricción de Dispositivos (REACTIVADA PARA PRODUCCIÓN)
+        // Control de Restricción de Dispositivos (HABILITADA PARA PRODUCCIÓN)
         const DISABLE_IOS_RESTRICTION = false;
+
+        // Constantes de Snapshot Local de Afiliados (Lotes W.2 y W.3)
+        const AFFILIATES_SNAPSHOT_KEY = 'affiliates_snapshot';
+        const SNAPSHOT_SYNC_TOKEN = 'TOKEN_MCO_SYNC_AFILIADOS_2026';
+        const SNAPSHOT_TTL_MS = 24 * 60 * 60 * 1000; // 24 horas
+        const SNAPSHOT_TIMEOUT_MS = 25000; // 25 segundos
+        let isSyncingSnapshot = false;
+        let snapshotSyncPromise = null;
+        let cachedLogoDataUrl = '';
 
         // Estado global
         let currentUser = null;
@@ -1244,6 +1253,32 @@
             document.getElementById('pwa-guide-screen').style.display = 'none';
         }
 
+        // ── Inicialización de Logo Autónomo Local (Lote W.3) ───────────────
+        function initLogoDataUrl() {
+            try {
+                const img = document.querySelector('.logo-circle img');
+                if (img) {
+                    const tryConvert = () => {
+                        try {
+                            if (img.naturalWidth > 0 && !cachedLogoDataUrl) {
+                                const canvas = document.createElement('canvas');
+                                canvas.width = img.naturalWidth;
+                                canvas.height = img.naturalHeight;
+                                const ctx = canvas.getContext('2d');
+                                ctx.drawImage(img, 0, 0);
+                                cachedLogoDataUrl = canvas.toDataURL('image/png');
+                            }
+                        } catch (_) {}
+                    };
+                    if (img.complete) {
+                        tryConvert();
+                    } else {
+                        img.addEventListener('load', tryConvert);
+                    }
+                }
+            } catch (_) {}
+        }
+
         // ── Inicialización de la Aplicación ─────────────────────────────────
         window.addEventListener('DOMContentLoaded', () => {
             // 1. Mostrar contenedor principal de la aplicación
@@ -1257,9 +1292,15 @@
                 }
             }
 
-            // 3. Comprobar sesión existente y configurar handlers
+            // 3. Inicializar conversión de logo local
+            initLogoDataUrl();
+
+            // 4. Comprobar sesión existente y configurar handlers
             checkSession();
             setupIFrameHandlers();
+
+            // 5. Sincronización en segundo plano del Snapshot de afiliados (no bloqueante, Lote W.2/W.3)
+            snapshotSyncPromise = syncAffiliatesSnapshotIfNeeded();
         });
 
         // ── Gestión de Sesión ───────────────────────────────────────────────
@@ -1297,7 +1338,24 @@
             if (affEl) affEl.textContent = `N° Afiliado: ${currentUser.affiliateNumber || '-'}`;
         }
 
-        // ── Normalización de Fechas ─────────────────────────────────────────
+        // ── Normalización de Datos y Fechas ─────────────────────────────────
+        function escapeHtml(text) {
+            if (text == null) return '';
+            return String(text)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
+        function formatDni(rawDni) {
+            if (!rawDni) return '';
+            const clean = String(rawDni).replace(/\D/g, '');
+            if (!clean) return escapeHtml(String(rawDni));
+            return clean.replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+        }
+
         function formatVto(vtoRaw) {
             if (!vtoRaw) return '';
             let raw = vtoRaw.replace(/^Vto:\s*/i, '').replace(/\s*\(.*?\)/g, '').trim();
@@ -1489,6 +1547,174 @@
             window.open(NEWS_URL, '_blank', 'noopener,noreferrer');
         }
 
+        // ── Módulo de Snapshot y Respaldo Local (Lote W.2) ───────────────────
+
+        /**
+         * Valida estrictamente la integridad y completitud de un objeto Snapshot.
+         */
+        function isValidAffiliatesSnapshot(snapshot) {
+            if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) {
+                return false;
+            }
+            if (snapshot.success !== true) return false;
+            if (!snapshot.version) return false;
+            if (!snapshot.updatedAt || isNaN(new Date(snapshot.updatedAt).getTime())) {
+                return false;
+            }
+            if (!Array.isArray(snapshot.columns)) return false;
+
+            const cols = snapshot.columns.map(c => String(c).toLowerCase());
+            const hasDni = cols.includes('dni');
+            const hasNombre = cols.includes('nombre');
+            const hasAfiliado = cols.includes('nroafiliado') || cols.includes('afiliado');
+            const hasEstab = cols.includes('establecimiento');
+            const hasVto = cols.includes('vto');
+            if (!hasDni || !hasNombre || !hasAfiliado || !hasEstab || !hasVto) {
+                return false;
+            }
+
+            if (!Array.isArray(snapshot.rows) || snapshot.rows.length === 0) {
+                return false;
+            }
+            if (typeof snapshot.count !== 'number' || snapshot.count !== snapshot.rows.length) {
+                return false;
+            }
+
+            // Cada fila debe ser un array con al menos 5 columnas
+            const allRowsValid = snapshot.rows.every(r => Array.isArray(r) && r.length >= 5);
+            if (!allRowsValid) return false;
+
+            return true;
+        }
+
+        /**
+         * Carga y parsea el Snapshot almacenado en localStorage.
+         * Retorna null si no existe, si el JSON es inválido o no pasa la validación estricta.
+         * No elimina datos de forma destructiva.
+         */
+        function loadAffiliatesSnapshot() {
+            try {
+                const raw = localStorage.getItem(AFFILIATES_SNAPSHOT_KEY);
+                if (!raw) return null;
+                const parsed = JSON.parse(raw);
+                if (!isValidAffiliatesSnapshot(parsed)) {
+                    return null;
+                }
+                return parsed;
+            } catch (_) {
+                return null;
+            }
+        }
+
+        /**
+         * Sincroniza en segundo plano el Snapshot desde Backend 1 si no existe o tiene >= 24h.
+         * Es no bloqueante, previene ejecuciones concurrentes y no destruye datos previos ante fallos.
+         * Retorna la Promise del proceso para permitir que el fallback espere su resolución si es necesario (Lote W.3).
+         */
+        async function syncAffiliatesSnapshotIfNeeded() {
+            if (isSyncingSnapshot && snapshotSyncPromise) {
+                return snapshotSyncPromise;
+            }
+
+            const syncTask = (async () => {
+                try {
+                    const existing = loadAffiliatesSnapshot();
+                    if (existing) {
+                        const updatedAtMs = new Date(existing.updatedAt).getTime();
+                        const ageMs = Date.now() - updatedAtMs;
+                        // Si updatedAt es futuro o tiene menos de 24 hs, se considera vigente
+                        if (ageMs < SNAPSHOT_TTL_MS) {
+                            return;
+                        }
+                    }
+
+                    isSyncingSnapshot = true;
+
+                    if (typeof AbortController === 'undefined') {
+                        const url = `${LOGIN_API_URL}?action=snapshot&syncToken=${encodeURIComponent(SNAPSHOT_SYNC_TOKEN)}`;
+                        const res = await fetch(url);
+                        if (res.ok) {
+                            const data = await res.json();
+                            if (isValidAffiliatesSnapshot(data)) {
+                                localStorage.setItem(AFFILIATES_SNAPSHOT_KEY, JSON.stringify(data));
+                            }
+                        }
+                        return;
+                    }
+
+                    const controller = new AbortController();
+                    const timeoutId = setTimeout(() => controller.abort(), SNAPSHOT_TIMEOUT_MS);
+
+                    const url = `${LOGIN_API_URL}?action=snapshot&syncToken=${encodeURIComponent(SNAPSHOT_SYNC_TOKEN)}`;
+                    const response = await fetch(url, { signal: controller.signal });
+                    clearTimeout(timeoutId);
+
+                    if (!response.ok) return;
+
+                    const data = await response.json();
+                    if (isValidAffiliatesSnapshot(data)) {
+                        localStorage.setItem(AFFILIATES_SNAPSHOT_KEY, JSON.stringify(data));
+                    }
+                } catch (_) {
+                    // Silencioso ante fallos de red o timeouts para no afectar la UI
+                } finally {
+                    isSyncingSnapshot = false;
+                }
+            })();
+
+            snapshotSyncPromise = syncTask;
+            return syncTask;
+        }
+
+        /**
+         * Busca un afiliado en el Snapshot local por DNI y Nombre normalizados.
+         * Retorna un objeto currentUser completo o null si no hay coincidencia.
+         */
+        function findAffiliateInSnapshot(dniInput, nameInput) {
+            const cleanDni = String(dniInput || '').replace(/\D/g, '');
+            const cleanName = String(nameInput || '').replace(/\s+/g, ' ').trim().toUpperCase();
+
+            if (!cleanDni || !cleanName) return null;
+
+            const snapshot = loadAffiliatesSnapshot();
+            if (!snapshot || !Array.isArray(snapshot.rows)) return null;
+
+            const cols = snapshot.columns.map(c => String(c).toLowerCase());
+            const idxDni = cols.indexOf('dni');
+            const idxNombre = cols.indexOf('nombre');
+            let idxAfiliado = cols.indexOf('nroafiliado');
+            if (idxAfiliado === -1) idxAfiliado = cols.indexOf('afiliado');
+            const idxEstab = cols.indexOf('establecimiento');
+            const idxVto = cols.indexOf('vto');
+
+            if (idxDni === -1 || idxNombre === -1) return null;
+
+            for (const row of snapshot.rows) {
+                if (!Array.isArray(row)) continue;
+
+                const rowDni = String(row[idxDni] || '').replace(/\D/g, '');
+                const rowName = String(row[idxNombre] || '').replace(/\s+/g, ' ').trim().toUpperCase();
+
+                if (rowDni === cleanDni && rowName === cleanName) {
+                    const affNumber = idxAfiliado !== -1 ? String(row[idxAfiliado] || '').trim() : '';
+                    const estab = idxEstab !== -1 ? String(row[idxEstab] || '').trim() : '';
+                    const vtoRawVal = idxVto !== -1 ? String(row[idxVto] || '').trim() : '';
+
+                    return {
+                        dni: cleanDni,
+                        fullName: String(row[idxNombre] || '').replace(/\s+/g, ' ').trim(),
+                        affiliateNumber: affNumber,
+                        establishment: estab,
+                        vtoRaw: formatVto(vtoRawVal),
+                        expirationDate: vtoRawVal,
+                        status: 'activo'
+                    };
+                }
+            }
+
+            return null;
+        }
+
         // ── Login Submit ────────────────────────────────────────────────────
         async function handleLoginSubmit(event) {
             event.preventDefault();
@@ -1515,10 +1741,29 @@
 
             try {
                 const url = `${LOGIN_API_URL}?dni=${encodeURIComponent(dni)}&nombre=${encodeURIComponent(name)}`;
-                const response = await fetch(url);
-                if (!response.ok) {
-                    throw new Error(`Error de servidor (${response.status})`);
+                
+                let response;
+                if (typeof AbortController !== 'undefined') {
+                    const loginController = new AbortController();
+                    const loginTimeoutId = setTimeout(() => loginController.abort(), 20000);
+                    try {
+                        response = await fetch(url, { signal: loginController.signal });
+                    } finally {
+                        clearTimeout(loginTimeoutId);
+                    }
+                } else {
+                    response = await fetch(url);
                 }
+
+                if (!response.ok) {
+                    // Fallo técnico de servidor (HTTP 404 o 5xx activa fallback; 401/403 no)
+                    const isTechnical = (response.status === 404 || response.status >= 500);
+                    const httpErr = new Error(`Error de servidor (${response.status})`);
+                    httpErr.isTechnical = isTechnical;
+                    httpErr.status = response.status;
+                    throw httpErr;
+                }
+
                 const data = await response.json();
 
                 if (data.success) {
@@ -1542,13 +1787,54 @@
                     navigateTo('credential-view');
                     checkNotifications();
                 } else {
+                    // ERROR DE NEGOCIO: credenciales inválidas. NUNCA activa fallback.
                     showSnackbar(data.message || 'DNI o Nombre y Apellido incorrectos. Por favor verifique los datos.');
                 }
             } catch(error) {
-                if (error.message && error.message.includes('Error de servidor')) {
-                    showSnackbar(error.message);
+                // Evaluar si es un fallo técnico susceptible de fallback a Snapshot local
+                const isTechnicalError = error.isTechnical === true ||
+                    error.name === 'AbortError' ||
+                    error instanceof TypeError ||
+                    (error.message && (error.message.includes('Failed to fetch') || error.message.includes('NetworkError')));
+
+                if (isTechnicalError) {
+                    // Lote W.3: Si la sincronización inicial de Snapshot sigue en curso, esperar su resolución
+                    if (snapshotSyncPromise) {
+                        try {
+                            await snapshotSyncPromise;
+                        } catch (_) {}
+                    }
+
+                    const fallbackUser = findAffiliateInSnapshot(dni, name);
+                    if (fallbackUser) {
+                        currentUser = fallbackUser;
+                        sessionStorage.setItem('user_session', JSON.stringify(currentUser));
+                        localStorage.setItem('user_session', JSON.stringify(currentUser));
+
+                        document.getElementById('login-dni').value = '';
+                        document.getElementById('login-name').value = '';
+
+                        populateDashboard();
+                        navigateTo('credential-view');
+                        checkNotifications();
+
+                        showSnackbar('Sesión iniciada sin conexión (modo respaldo).');
+                        return;
+                    }
+
+                    const snapshot = loadAffiliatesSnapshot();
+                    if (snapshot) {
+                        showSnackbar('Sin conexión: el afiliado no se encuentra en el registro local.');
+                    } else {
+                        showSnackbar('Error de conexión. Verifique su red e intente nuevamente.');
+                    }
                 } else {
-                    showSnackbar('Error de conexión. Verifique su red e intente nuevamente.');
+                    // Fallo no técnico (ej. HTTP 401/403 o error específico)
+                    if (error.message && error.message.includes('Error de servidor')) {
+                        showSnackbar(error.message);
+                    } else {
+                        showSnackbar('Error de conexión. Verifique su red e intente nuevamente.');
+                    }
                 }
                 console.error('[Login]', error);
             } finally {
@@ -1558,44 +1844,352 @@
             }
         }
 
-        // ── IFrame de Credencial ────────────────────────────────────────────
+        // ── Generador Autónomo de Credencial Local (Lote W.3) ───────────────
+
+        /**
+         * Construye el documento HTML completo, autónomo y 100% local para la credencial digital.
+         * Genera la credencial directamente desde currentUser sin dependencias de red:
+         * - Cero fuentes remotas (stack nativo del sistema operativo).
+         * - Icono oficial de verificación en SVG embebido.
+         * - Logo local mediante Data URI / base URL relativa sin conexión.
+         * - Corrección estética de N° Afiliado alineado al margen derecho.
+         */
+        function buildLocalCredentialHtml(user) {
+            if (!user) return '';
+
+            const escapedName = escapeHtml(user.fullName || '');
+            const formattedDni = formatDni(user.dni || '');
+            const escapedAffiliate = escapeHtml(user.affiliateNumber || '-');
+            const escapedEstablishment = escapeHtml(user.establishment || '-');
+            const formattedVto = formatVto(user.vtoRaw || user.expirationDate || '') || '-';
+
+            const st = String(user.status || 'activo').toUpperCase();
+            const isInactive = (st === 'INACTIVO' || st === 'VENCIDO');
+            const statusText = isInactive ? st : 'ACTIVO';
+            const badgeClass = isInactive ? 'badge-status status-inactive' : 'badge-status';
+            const securityChipText = isInactive ? 'INACTIVA' : 'ACTIVA';
+
+            const logoSrc = cachedLogoDataUrl || 'logo.png';
+
+            return `<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="utf-8"/>
+    <meta content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" name="viewport"/>
+    <base href="${document.baseURI}"/>
+    <title>Mi Credencial Online</title>
+    <style>
+        :root {
+            --primary: #1E5FAF;
+            --primary-dark: #164A8C;
+            --primary-light: #4A91CC;
+            --secondary: #25A9D6;
+            --bg-color: #E6EEF4;
+            --surface: #F1FAFC;
+            --text-main: #16324F;
+            --text-secondary: #60758A;
+            --border-color: #C8DDE5;
+            --error-color: #D32F2F;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            padding: 16px;
+            overflow-x: hidden;
+        }
+
+        .credential-container {
+            width: 100%;
+            max-width: 420px;
+            margin: 0 auto;
+            position: relative;
+        }
+
+        .credential-card {
+            background: var(--surface);
+            border-radius: 20px;
+            border: 1px solid var(--border-color);
+            box-shadow: 0 10px 30px -5px rgba(22, 50, 79, 0.08), 0 4px 12px -2px rgba(22, 50, 79, 0.04);
+            overflow: hidden;
+            position: relative;
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+        }
+
+        /* Top security stripe */
+        .security-stripe {
+            height: 4px;
+            background: linear-gradient(90deg, var(--primary-dark) 0%, var(--primary) 50%, var(--secondary) 100%);
+            width: 100%;
+        }
+
+        .card-inner {
+            padding: 24px 22px;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+
+        /* Header row */
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 12px;
+        }
+
+        .logo-img {
+            height: 52px;
+            max-width: 160px;
+            object-fit: contain;
+        }
+
+        .status-block {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-end;
+            gap: 4px;
+        }
+
+        .badge-status {
+            background-color: #DEF2F8;
+            color: var(--primary-dark);
+            border: 1px solid #B0E2F3;
+            padding: 4px 12px;
+            border-radius: 9999px;
+            font-size: 12px;
+            font-weight: 800;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+        }
+
+        .badge-status.status-inactive {
+            background-color: #FFEBEE !important;
+            color: var(--error-color) !important;
+            border-color: #FFCDD2 !important;
+        }
+
+        .vto-text {
+            font-size: 12px;
+            font-weight: 700;
+            color: var(--text-secondary);
+            letter-spacing: 0.02em;
+        }
+
+        /* Data fields */
+        .data-group {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .field-label {
+            font-size: 12px;
+            font-weight: 800;
+            letter-spacing: 0.06em;
+            color: var(--primary);
+            text-transform: uppercase;
+        }
+
+        .field-value-lg {
+            font-size: 22px;
+            font-weight: 700;
+            color: var(--text-main);
+            line-height: 1.25;
+            word-break: break-word;
+        }
+
+        .field-value-md {
+            font-size: 19px;
+            font-weight: 600;
+            color: var(--text-main);
+            line-height: 1.3;
+        }
+
+        .grid-two-cols {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+        }
+
+        /* Ajuste estético de N° Afiliado hacia el margen derecho a la misma altura */
+        .grid-two-cols .data-group:last-child {
+            align-items: flex-end;
+            text-align: right;
+        }
+
+        .divider {
+            height: 1px;
+            background-color: var(--border-color);
+            margin: 2px 0;
+        }
+
+        /* Card footer */
+        .card-footer {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding-top: 4px;
+            border-top: 1px solid var(--border-color);
+        }
+
+        .footer-brand {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            color: var(--text-secondary);
+            font-size: 13px;
+            font-weight: 600;
+        }
+
+        .footer-brand svg {
+            width: 17px;
+            height: 17px;
+            fill: var(--primary);
+            flex-shrink: 0;
+        }
+
+        .security-chip {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            font-size: 11px;
+            font-weight: 700;
+            color: var(--primary);
+            background: #E0EEF9;
+            padding: 3px 8px;
+            border-radius: 6px;
+            letter-spacing: 0.04em;
+        }
+
+        @media (max-width: 360px) {
+            .card-inner {
+                padding: 18px 16px;
+                gap: 16px;
+            }
+            .logo-img {
+                height: 44px;
+            }
+            .field-value-lg {
+                font-size: 20px;
+            }
+            .field-value-md {
+                font-size: 17px;
+            }
+            .field-label {
+                font-size: 11px;
+            }
+            .badge-status {
+                font-size: 11px;
+            }
+            .vto-text {
+                font-size: 11px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <main class="credential-container">
+        <article class="credential-card">
+            <div class="security-stripe"></div>
+            <div class="card-inner">
+                <header class="card-header">
+                    <img alt="Mi Credencial Online" class="logo-img" src="${logoSrc}" onerror="if(!this.dataset.tried){this.dataset.tried='1';this.src='logo.png';}"/>
+                    <div class="status-block">
+                        <span id="user-status" class="${badgeClass}">${statusText}</span>
+                        <span id="user-vto" class="vto-text">Vto: ${escapeHtml(formattedVto)}</span>
+                    </div>
+                </header>
+
+                <div class="divider"></div>
+
+                <div class="data-group">
+                    <span class="field-label">Nombre y Apellido</span>
+                    <p id="user-name" class="field-value-lg">${escapedName}</p>
+                </div>
+
+                <div class="grid-two-cols">
+                    <div class="data-group">
+                        <span class="field-label">DNI</span>
+                        <p id="user-dni" class="field-value-md">${formattedDni}</p>
+                    </div>
+                    <div class="data-group">
+                        <span class="field-label">N° Afiliado</span>
+                        <p id="user-affiliate" class="field-value-md">${escapedAffiliate}</p>
+                    </div>
+                </div>
+
+                <div class="data-group">
+                    <span class="field-label">Establecimiento</span>
+                    <p id="user-establishment" class="field-value-md">${escapedEstablishment}</p>
+                </div>
+
+                <footer class="card-footer">
+                    <div class="footer-brand">
+                        <svg viewBox="0 0 24 24" width="17" height="17" fill="var(--primary)">
+                            <path d="m23 12-2.44-2.79.34-3.69-3.61-.82-1.89-3.2L12 2.96 8.6 1.5 6.71 4.69 3.1 5.5l.34 3.7L1 12l2.44 2.79-.34 3.7 3.61.82L8.6 22.5l3.4-1.47 3.4 1.46 1.89-3.19 3.61-.82-.34-3.69L23 12zm-12.91 4.72-3.8-3.81 1.48-1.48 2.32 2.33 5.85-5.87 1.48 1.48-7.33 7.35z"/>
+                        </svg>
+                        <span>Credencial Digital Oficial</span>
+                    </div>
+                    <div class="security-chip">
+                        <span>${securityChipText}</span>
+                    </div>
+                </footer>
+            </div>
+        </article>
+    </main>
+
+    <script>
+        const card = document.querySelector('.credential-card');
+        if (card && window.innerWidth > 768) {
+            document.addEventListener('mousemove', (e) => {
+                const xAxis = (window.innerWidth / 2 - e.pageX) / 45;
+                const yAxis = (window.innerHeight / 2 - e.pageY) / 45;
+                card.style.transform = 'perspective(1000px) rotateY(' + xAxis + 'deg) rotateX(' + yAxis + 'deg)';
+            });
+            document.addEventListener('mouseleave', () => {
+                card.style.transform = 'perspective(1000px) rotateY(0deg) rotateX(0deg)';
+            });
+        }
+    <\/script>
+</body>
+</html>`;
+        }
+
+        // ── IFrame de Credencial Local (Lote W.3) ────────────────────────────
         function loadCredentialIFrame() {
             if (!currentUser) return;
 
-            document.getElementById('credential-loader').style.display = 'flex';
+            const loader = document.getElementById('credential-loader');
+            if (loader) loader.style.display = 'flex';
+
             const iframe = document.getElementById('credential-iframe');
+            if (!iframe) return;
 
-            const params = new URLSearchParams({
-                dni: currentUser.dni,
-                nombre: currentUser.fullName,
-                nro: currentUser.affiliateNumber,
-                estab: currentUser.establishment,
-                vto: currentUser.vtoRaw,
-                status: currentUser.status || 'activo'
-            });
+            const html = buildLocalCredentialHtml(currentUser);
+            iframe.removeAttribute('src');
+            iframe.srcdoc = html;
 
-            const targetUrl = `${CREDENTIAL_BASE_URL}?${params.toString()}`;
-            if (iframe.src !== targetUrl) {
-                iframe.src = targetUrl;
-            } else {
-                document.getElementById('credential-loader').style.display = 'none';
-            }
+            setTimeout(() => {
+                if (loader) loader.style.display = 'none';
+            }, 100);
         }
 
         function reloadCredential() {
-            if (!currentUser) return;
-            const iframe = document.getElementById('credential-iframe');
-            const params = new URLSearchParams({
-                dni: currentUser.dni,
-                nombre: currentUser.fullName,
-                nro: currentUser.affiliateNumber,
-                estab: currentUser.establishment,
-                vto: currentUser.vtoRaw,
-                status: currentUser.status || 'activo'
-            });
-            const targetUrl = `${CREDENTIAL_BASE_URL}?${params.toString()}`;
-            document.getElementById('credential-loader').style.display = 'flex';
-            iframe.src = targetUrl + '&_t=' + Date.now();
+            loadCredentialIFrame();
         }
 
         function setupIFrameHandlers() {
@@ -1656,7 +2250,10 @@
             clearSession();
             closeLogoutDialog();
             const iframe = document.getElementById('credential-iframe');
-            if (iframe) iframe.src = 'about:blank';
+            if (iframe) {
+                iframe.srcdoc = '';
+                iframe.src = 'about:blank';
+            }
             navigateTo('login-view');
         }
 
