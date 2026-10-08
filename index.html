@@ -8,6 +8,8 @@
     <meta name="apple-mobile-web-app-capable" content="yes"/>
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
     <meta name="apple-mobile-web-app-title" content="Mi Credencial"/>
+    <meta name="format-detection" content="telephone=no"/>
+    <meta name="theme-color" content="#012081"/>
     <link rel="apple-touch-icon" href="logo.png"/>
     <link rel="icon" type="image/png" href="logo.png"/>
     <link rel="manifest" href="manifest.json"/>
@@ -304,13 +306,16 @@
 
         /* Dashboard Styles */
         .app-bar {
-            height: 60px;
+            height: calc(60px + env(safe-area-inset-top, 0px));
             background-color: var(--surface);
             border-bottom: 1px solid var(--border-color);
             display: flex;
             align-items: center;
             justify-content: space-between;
-            padding: 0 18px;
+            padding-top: env(safe-area-inset-top, 0px);
+            padding-bottom: 0;
+            padding-left: calc(18px + env(safe-area-inset-left, 0px));
+            padding-right: calc(18px + env(safe-area-inset-right, 0px));
             position: sticky;
             top: 0;
             z-index: 100;
@@ -359,7 +364,7 @@
         }
 
         .dashboard-content {
-            padding: 20px 18px;
+            padding: 20px 18px calc(20px + env(safe-area-inset-bottom, 0px));
             display: flex;
             flex-direction: column;
             gap: 16px;
@@ -482,6 +487,8 @@
         /* Credential WebView View */
         .webview-container {
             flex-grow: 1;
+            display: flex;
+            flex-direction: column;
             width: 100%;
             position: relative;
             background-color: var(--bg-color);
@@ -489,7 +496,8 @@
 
         .webview-iframe {
             width: 100%;
-            height: calc(100vh - 124px);
+            height: calc(100vh - 124px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
+            flex-grow: 1;
             border: none;
             display: block;
         }
@@ -509,13 +517,16 @@
 
         /* Bottom Navigation Bar */
         .bottom-nav {
-            height: 64px;
+            height: calc(64px + env(safe-area-inset-bottom, 0px));
             background-color: var(--surface);
             border-top: 1px solid var(--border-color);
             display: flex;
             align-items: center;
             justify-content: space-around;
-            padding: 0 10px;
+            padding-top: 0;
+            padding-bottom: env(safe-area-inset-bottom, 0px);
+            padding-left: calc(10px + env(safe-area-inset-left, 0px));
+            padding-right: calc(10px + env(safe-area-inset-right, 0px));
             position: sticky;
             bottom: 0;
             z-index: 100;
@@ -629,7 +640,7 @@
             width: 100%;
             max-width: 480px;
             border-radius: 24px 24px 0 0;
-            padding: 24px 20px 32px;
+            padding: 24px 20px calc(32px + env(safe-area-inset-bottom, 0px));
             box-shadow: 0 -10px 30px rgba(15, 23, 42, 0.15);
             animation: slideUp 0.25s ease-out forwards;
         }
@@ -1246,7 +1257,9 @@
         }
 
         function isStandalone() {
-            return ('standalone' in window.navigator) && window.navigator.standalone;
+            const isIosStandalone = ('standalone' in window.navigator) && window.navigator.standalone;
+            const isDisplayStandalone = window.matchMedia && window.matchMedia('(display-mode: standalone)').matches;
+            return Boolean(isIosStandalone || isDisplayStandalone);
         }
 
         function dismissPwaGuide() {
@@ -1290,6 +1303,13 @@
                     document.getElementById('os-restrict-screen').style.display = 'flex';
                     return;
                 }
+            }
+
+            // Ocultar guía de instalación si ya está en modo Standalone (Lote W.4)
+            if (isStandalone()) {
+                document.querySelectorAll('.pwa-guide-card').forEach(card => {
+                    card.style.display = 'none';
+                });
             }
 
             // 3. Inicializar conversión de logo local
